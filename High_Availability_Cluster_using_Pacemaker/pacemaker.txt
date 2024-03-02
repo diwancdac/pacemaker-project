@@ -1,0 +1,268 @@
+
+
+HA Cluster Configuration in RHEL 8 (CentOS 8):
+==============================================
+
+High Availability cluster, also known as failover cluster or active-passive cluster, is one of the most widely used cluster types in a production environment to have continuous availability of services even one of the cluster nodes fails.
+
+In technical, if the server running application has failed for some reason (ex: hardware failure), cluster software (pacemaker) will restart the application on the working node.
+
+Failover is not just restarting an application; it is a series of operations associated with it, like mounting filesystems, configuring networks, and starting dependent applications.
+
+Environment:
+Here, we will configure a failover cluster with Pacemaker to make the Apache (web) server as a highly available application.
+
+Here, we will configure the Apache web server, filesystem, and networks as resources for our cluster.
+
+For a filesystem resource, we would be using shared storage coming from iSCSI storage.
+
+CentOS 8 High Availability Cluster Infrastructure
+ 
+Host Name			IP Address		OS		Purpose
+node1.nehraclasses.local	192.168.1.126		CentOS 8	Cluster Node 1
+node2.nehraclasses.local	192.168.1.119		CentOS 8	Cluster Node 2
+storage.nehraclasses.local	192.168.1.109		CentOS 8	iSCSI Shared Storage
+virtualhost.nehraclasses.local	192.168.1.112		CentOS 8	Virtual Cluster IP (Apache)
+
+Shared Storage
+Shared storage is one of the critical resources in the high availability cluster as it stores the data of a running application. All the nodes in a cluster will have access to the shared storage for the latest data.
+
+SAN storage is the widely used shared storage in a production environment. Due to resource constraints, for this demo, we will configure a cluster with iSCSI storage for a demonstration purpose.
+
+
+
+
+on storage:
+
+[root@localhost ~]# yum install -y targetcli lvm2
+
+
+
+
+
+on nodes:
+
+
+[root@localhost ~]# yum install -y iscsi-initiator-utils lvm2
+
+
+
+
+[root@storage ~]# dnf install -y targetcli lvm2 iscsi-initiator-utils lvm2
+Let’s list the available disks in the iSCSI server using the below command.
+[root@storage ~]# fdisk -l | grep -i sd
+Here, we will create an LVM on the iSCSI server to use as shared storage for our cluster nodes.
+[root@storage ~]# pvcreate /dev/sdb
+[root@storage ~]# vgcreate vg_iscsi /dev/sdb
+[root@storage ~]# lvcreate -l 100%FREE -n lv_iscsi vg_iscsi
+
+cat /etc/iscsi/initiatorname.iscsi
+Node 1:
+
+InitiatorName=iqn.1994-05.com.redhat:121c93cbad3a
+Node 2:
+
+InitiatorName=iqn.1994-05.com.redhat:827e5e8fecb
+
+ 
+Enter the below command to get an iSCSI CLI for an interactive prompt.
+
+[root@storage ~]# targetcli
+Output:
+
+Warning: Could not load preferences file /root/.targetcli/prefs.bin.
+targetcli shell version 2.1.fb49
+right 2011-2013 by Datera, Inc and others.
+For help on commands, type 'help'.
+
+/> cd /backstores/block
+/backstores/block> create iscsi_shared_storage /dev/vg_iscsi/lv_iscsi
+Created block storage object iscsi_shared_storage using /dev/vg_iscsi/lv_iscsi.
+/backstores/block> cd /iscsi
+/iscsi> create
+Created target iqn.2003-01.org.linux-iscsi.storage.x8664:sn.eac9425e5e18.
+Created TPG 1.
+Global pref auto_add_default_portal=true
+Created default portal listening on all IPs (0.0.0.0), port 3260.
+/iscsi> cd iqn.2003-01.org.linux-iscsi.storage.x8664:sn.eac9425e5e18/tpg1/acls  << Change as per the output of previous command
+/iscsi/iqn.20...e18/tpg1/acls> create iqn.1994-05.com.redhat:121c93cbad3a  << Node 1
+Created Node ACL for iqn.1994-05.com.redhat:121c93cbad3a
+/iscsi/iqn.20...e18/tpg1/acls> create iqn.1994-05.com.redhat:827e5e8fecb  << Node 2
+Created Node ACL for iqn.1994-05.com.redhat:827e5e8fecb
+/iscsi/iqn.20...e18/tpg1/acls> cd /iscsi/iqn.2003-01.org.linux-iscsi.storage.x8664:sn.eac9425e5e18/tpg1/luns
+/iscsi/iqn.20...e18/tpg1/luns> create /backstores/block/iscsi_shared_storage
+Created LUN 0.
+Created LUN 0->0 mapping in node ACL iqn.1994-05.com.redhat:827e5e8fecb
+Created LUN 0->0 mapping in node ACL iqn.1994-05.com.redhat:121c93cbad3a
+/iscsi/iqn.20...e18/tpg1/luns> cd /
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 1]
+  | | o- iscsi_shared_storage .............................................. [/dev/vg_iscsi/lv_iscsi (10.0GiB) write-thru activated]
+  | |   o- alua ................................................................................................... [ALUA Groups: 1]
+  | |     o- default_tg_pt_gp ....................................................................... [ALUA state: Active/optimized]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 1]
+  | o- iqn.2003-01.org.linux-iscsi.storage.x8664:sn.eac9425e5e18 ......................................................... [TPGs: 1]
+  |   o- tpg1 ............................................................................................... [no-gen-acls, no-auth]
+  |     o- acls .......................................................................................................... [ACLs: 2]
+  |     | o- iqn.1994-05.com.redhat:121c93cbad3a .................................................................. [Mapped LUNs: 1]
+  |     | | o- mapped_lun0 .................................................................. [lun0 block/iscsi_shared_storage (rw)]
+  |     | o- iqn.1994-05.com.redhat:827e5e8fecb ................................................................... [Mapped LUNs: 1]
+  |     |   o- mapped_lun0 .................................................................. [lun0 block/iscsi_shared_storage (rw)]
+  |     o- luns .......................................................................................................... [LUNs: 1]
+  |     | o- lun0 ......................................... [block/iscsi_shared_storage (/dev/vg_iscsi/lv_iscsi) (default_tg_pt_gp)]
+  |     o- portals .................................................................................................... [Portals: 1]
+  |       o- 0.0.0.0:3260 ..................................................................................................... [OK]
+  o- loopback ......................................................................................................... [Targets: 0]
+/> saveconfig
+Configuration saved to /etc/target/saveconfig.json
+/> exit
+Global pref auto_save_on_exit=true
+Last 10 configs saved in /etc/target/backup/.
+Configuration saved to /etc/target/saveconfig.json
+Enable and restart the Target service.
+[root@storage ~]# systemctl enable target
+[root@storage ~]# systemctl restart target
+Configure the firewall to allow iSCSI traffic.
+[root@storage ~]# firewall-cmd --permanent --add-port=3260/tcp
+[root@storage ~]# firewall-cmd --reload
+
+=================================================================================================================================================================================
+    
+    0  yum install -y iscsi-initiator-utils lvm2
+    1  cat /etc/iscsi/initiatorname.iscsi
+    2  iscsiadm -m discovery -t st -p 192.168.144.202
+    3  iscsiadm -m node -T iqn.2003-01.org.linux-iscsi.storage.x8664:sn.73638ebfea25 192.168.144.202 -l
+    4  lsblk
+    5  pvcreate /dev/sdb
+    6  vgs
+    7  vgcreate vg_apache /dev/sdb
+    8  vgs
+    9  lsblk
+   10  lvcreate -n lv_apache -l 100%FREE vg_apache
+   11  lsblk
+   12  mkfs.ext4 /dev/vg_apache/lv_apache
+   13   pvscan
+   14  vgscan
+   15  lvscan
+   16  vi /etc/hosts
+   
+   31  yum-config-manager --enable HighAvailability
+   32  yum makecache
+   33  ls /etc/yum.repos.d/
+   34  yum install -y pcs fence-agents-all pcp-zeroconf
+   35  firewall-cmd --permanent --add-service=high-availability
+   36  firewall-cmd --add-service=high-availability
+   37  firewall-cmd --reload
+   38  passwd hacluster
+   39  systemctl start pcsd
+   40  systemctl enable pcsd
+   41  pcs host auth node1.lab node2.lab
+   42  hostname
+   43
+   44  pcs cluster auth node1.lab node2.lab
+   45  pcs cluster setup project_cluster --start node1.lab node2.lab
+   46  pcs cluster setup --name project_cluster --start node1.lab node2.lab
+   47  pcs cluster enable --all
+   48  pcs cluster status
+   49  pcs status
+   50  pcs property set stonith-enabled=false
+   51  pcs status
+   52  yum install -y httpd
+   53  vim /etc/httpd/conf/httpd.conf
+   54  yum install vim
+   55  vim /etc/httpd/conf/httpd.conf
+   56  /bin/systemclt reload httpd.sevice > /dev/null 2>/dev/null || true
+   57  /usr/sbin/httpd -f /etc/httpd/conf/httpd.conf -c "PidFile /var/run/httpd.pid" -k graceful > /dev/null 2>/dev/null || true
+   58  mount /dev/vg_apache/lv_apache /var/www
+   59  mkdir /var/www/html
+   60  mkdir /var/www/error
+   61  restorecon -R /var/www
+   62  cat <<-END >/var/www/html/index.html
+<html>
+</html>
+END
+
+   63  cat <<-END >/var/www/html/index.html
+<html>
+</html>
+END
+
+   64  cat <<-END >/var/www/html/index.html
+<html>
+<body>Hello, Welcome! this page is for project by HPCSA group no.1</body>
+</html>
+END
+
+   65  cat /var/www/html/index.html
+   66  unmount /var/www
+   67  umount /var/www
+   68  firewall-cmd --permanent --add-service=http
+   69  firewall-cmd --reload
+   70  pcs resource create httpd_fs Filesystem device="/dev/mapper/vg_apache-lv_apache" directory="/var/www" fstype="ext4" --group apche
+   71  pcs resource create httpd_vip IPaddr2 ip=192.168.144.203 cidr_netmask=24 --group apache
+   72  pcs resource create httpd_ser apache configfile="/etc/httpd/conf/httpd.conf" statusurl="http://127.0.0.1/server-status" --group apache
+
+   81  pcs resource create httpd_fs Filesystem device="/dev/mapper/vg_apache-lv_apache" directory="/var/www" fstype="ext4" --group apache
+   82  pcs resource create httpd_fs1 Filesystem device="/dev/mapper/vg_apache-lv_apache" directory="/var/www" fstype="ext4" --group apache
+   83  pcs status
+   84  pcs resource group delete apche
+  
+  116  journalctl -u corosync
+  117  systemctl restart corosync pacemaker
+  118  pcs quorum show
+  119  pcs status nodes
+  120  pcs status
+  121  history
+========================================================================================================================================================================
+    ###ON node2.lab#####
+
+    0  yum install -y iscsi-initiator-utils lvm2
+    1  cat /etc/iscsi/initiatorname.iscsi
+    2  iscsiadm -m discovery -t st -p 192.168.144.202
+    3  iscsiadm -m node -T iqn.2003-01.org.linux-iscsi.storage.x8664:sn.73638ebfea25 192.168.144.202 -l
+    4  lsblk
+    5  pvscan
+    6  vgscan
+    7  lvscan
+    8  systemctl restart iscsi
+    9  pvscan
+   10  systemctl restart lvm2
+   11  systemctl restart lvm2-lvmetad.service
+   12  pvscan
+   13  vgscan
+   14  lvscan
+   15  vi /etc/hosts
+   16  yum install yum-utils
+   17  yum-config-manager --enable HighAvailability
+   18  yum makecache
+   19  yum-config-manager --enable HighAvailability
+   20  yum install -y pcs fence-agents-all pcp-zeroconf
+   21  firewall-cmd --permanent --add-service=high-availability
+   22  firewall-cmd --add-service=high-availability
+   23  firewall-cmd --reload
+   24  cat /etc/passwd
+   25  passwd hacluster
+   26  systemctl start pcsd
+   27  systemctl enable pcsd
+   28  hostname
+   29  pcs cluster auth node1.lab node2.lab
+   30  yum install -y httpd
+   31  vim /etc/httpd/conf/httpd.conf
+   32  yum install vim
+   33  vim /etc/httpd/conf/httpd.conf
+   34   /bin/systemclt reload httpd.sevice > /dev/null 2>/dev/null || true
+   35  /usr/sbin/httpd -f /etc/httpd/conf/httpd.conf -c "PidFile /var/run/httpd.pid" -k graceful > /dev/null 2>/dev/null || true
+   36  firewall-cmd --permanent --add-service=http
+   37  firewall-cmd --reload
+   38  pcs status show
+   39  pcs status nodes
+   40  vi /etc/hosts
+   41  history
+
+
+
